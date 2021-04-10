@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+    <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, viewport-fit=cover" />
+    <title>Electron Soil</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/vant@2.12/lib/index.css" />
+
+    <!-- 引入 Vue 和 Vant 的 JS 文件 -->
+    <script src="https://cdn.jsdelivr.net/npm/vue@2.6/dist/vue.min.js"></script>
+    <script src="https://unpkg.com/vue-router@3.5.1/dist/vue-router.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vant@2.12/lib/vant.min.js"></script>
+    <style>
+        body {
+            color: #333;
+            background-color: #f8f8f8;
+        }
+
+        .nav {
+            position: relative;
+            display: -webkit-box;
+            display: -webkit-flex;
+            display: flex;
+            -webkit-box-align: center;
+            -webkit-align-items: center;
+            align-items: center;
+            -webkit-box-pack: center;
+            -webkit-justify-content: center;
+            justify-content: center;
+            height: 56px;
+            background-color: #fff;
+        }
+
+        .van-image {
+            position: relative;
+            display: inline-block;
+            width: 95%;
+            height: auto;
+            padding: 3%;
+        }
+
+        .van-image__error,
+        .van-image__img,
+        .van-image__loading {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+
+<body>
+    <div id='app'>
+        <div>
+            <van-nav-bar title="电子土壤" placeholder fixed safe-area-inset-top border class="nav"></van-nav-bar>
+            <van-tabbar v-model="active">
+                <van-tabbar-item icon="video-o" v-on:click="redirectTo('videorec')">
+                    实时图像
+                </van-tabbar-item>
+                <van-tabbar-item icon="records" v-on:click="redirectTo('datalook')">
+                    数据监控
+                </van-tabbar-item>
+                <van-tabbar-item icon="setting-o" v-on:click="redirectTo('settings')">
+                    用户设置
+                </van-tabbar-item>
+            </van-tabbar>
+            <router-view v-bind:ws_addr="ws_addr" v-bind:temp="temp"
+                v-bind:humidity="humidity" v-bind:imgsrc='imgsrc' v-bind:connected='connected'
+                v-bind:target_humi="target_humi" v-bind:water_pump="water_pump"
+                v-bind:user_authentication="user_authentication"></router-view>
+        </div>
+    </div>
+    <template id='videorec'>
+        <div>
+            <van-grid square v-bind:column-num="1">
+                <van-grid-item v-bind:text="status">
+                    <!--van-image v-bind:src='imgsrc'></van-image-->
+                    <div class="van-image">
+                        <img v-bind:src='imgsrc' class="van-image__img">
+                    </div>
+                </van-grid-item>
+            </van-grid>
+            <div style="margin: 16px;margin-bottom:60px;">
+                <van-button round block type="info" native-type="submit" v-on:click="connectCamera"
+                    v-if="connected===false">连接{{ws_addr}}</van-button>
+                <van-button round block type="warning" v-on:click="disconnectCamera" native-type="submit"
+                    v-if="connected===true">断开连接 释放资源</van-button>
+                <!--van-button round block type="warning" v-on:click="singleImage" native-type="submit"
+                    v-if="connected===true" style="margin-top: 20px;">单张图片</van-button-->
+                <van-button round block type="default" v-on:click="activateWP"
+                    v-if="connected===true&&water_pump===false" style="margin-top: 16px;">单击激活水泵5s</van-button>
+                <van-button round block type="danger" v-on:click="disableWP" v-if="connected===true&&water_pump===true"
+                    style="margin-top: 16px;">水泵运行中，强制暂停水泵</van-button>
+            </div>
+        </div>
+    </template>
+    <template id='datalook'>
+        <van-grid :column-num="2">
+            <van-grid-item icon="ascending" v-bind:text="v_temp"></van-grid-item>
+            <van-grid-item icon="descending" v-bind:text="v_humidity"></van-grid-item>
+        </van-grid>
+    </template>
+    <template id='settings'>
+        <van-form>
+            <van-field v-model="c_ws_addr" label="摄像头地址"></van-field>
+            <van-cell title="湿度PID目标值">
+                <!-- 使用 right-icon 插槽来自定义右侧图标 -->
+                <template #right-icon>
+                    <van-stepper v-model="c_target_humi" min="40" max="90" v-model="c_target_humi" integer></van-stepper>
+                </template>
+            </van-cell>
+            <van-cell-group>
+                <van-field type="password" v-model="c_pwd" label="认证密码" placeholder="User Authentication" />
+              </van-cell-group>
+
+            <div style="margin: 16px;margin-bottom:60px;">
+                <van-button round block type="info" native-type="submit" v-on:click="saveSettings">保存</van-button>
+            </div>
+        </van-form>
+    </template>
+    <script>
+        const socket = null;
+        window.socket = socket;
+        var INT = 0;
+        var auth_pwd = '';
+        window.auth_pwd = auth_pwd;
+
+        function SendCommand(what,arg)
+        {
+            let jsonobj={
+                "command":what,
+                "authentication":window.auth_pwd
+            };
+            for(let i in arg){
+                jsonobj[i]=arg[i];
+            }
+            let strobj=JSON.stringify(jsonobj);
+            window.socket.send(strobj);
+        }
+
+        function singleImage() {
+            SendCommand("singeImage",{"timestamp":new Date().getTime()});
+        }
+
+        const videorec = Vue.component('videorec', {
+            props: ['ws_addr', 'imgsrc', 'connected', 'water_pump'],
+            data: function () {
+                return {
+                    status: '未连接摄像头'
+                }
+            },
+            template: '#videorec',
+            methods: {
+                connectCamera: function () {
+                    if (app.connected == false) {
+                        window.socket = new WebSocket(this.ws_addr)
+                        window.socket.onmessage = function (e) {
+                            let source=e.data.substr(1,e.data.length-2).replace(/\\/g,"");
+                            let jsonObj=JSON.parse(source);
+                            if (jsonObj.result=="image") {
+                                app.imgsrc = jsonObj.image;
+                                //document.getElementById('imagedisp').src=e.data;
+                                singleImage();
+                                app.water_pump = jsonObj.water_pump=="open"?true:false;
+                            }
+                            else if (jsonObj.result=="water_pump"&&jsonObj.water_pump=="open") {
+                                app.water_pump = true;
+                                console.log('working');
+                            }
+                            else if (jsonObj.result=="water_pump"&&jsonObj.water_pump=="shutdown") {
+                                app.water_pump = false;
+                                console.log('shutdown');
+                            }
+                            else if (jsonObj.result=="authfailure") {
+                                window.socket.close();
+                                app.connected = false;
+                                vant.Toast('用户验证失败。');
+                            }
+                        };
+                        window.socket.onopen = function (e) {
+                            vant.Toast('已连接摄像头。');
+                            app.connected = true;
+                            singleImage();
+                            //INT = window.setInterval(singleImage, 1000 / app.frame_rate);
+                        }
+                        //window.socket.send('singeImage');
+                    }
+                    else {
+                        vant.Toast('您已连接摄像头，无法使用本功能。');
+                    }
+                },
+                disconnectCamera: function () {
+                    if (app.connected == true) {
+                        vant.Toast('已断开摄像头。');
+                        app.connected = false;
+                        //INT = window.clearInterval(INT);
+                        window.socket.close();
+                    }
+                    else {
+                        vant.Toast('您已断开摄像头，无法使用本功能。');
+                    }
+                },
+                activateWP: function () {
+                    console.log('doing');
+                    //window.socket.send('pump_open');
+                    window.SendCommand("pump_open",{});
+                },
+                disableWP: function () {
+                    //window.socket.send('pump_shut');
+                    window.SendCommand("pump_shut",{});
+                }
+            }
+        });
+
+        const datalook = Vue.component('datalook', {
+            props: ['temp', 'humidity'],
+            computed: {
+                v_temp: function () {
+                    return '土壤温度:' + this.temp + ' °C';
+                },
+                v_humidity: function () {
+                    return '土壤湿度:' + this.humidity + ' %RH';
+                }
+            },
+            data: function () {
+                return {
+
+                }
+            },
+            template: '#datalook'
+        });
+
+        const settings = Vue.component('settings', {
+            props: ['ws_addr', 'target_humi','user_authentication'],
+            data: function () {
+                return {
+                    c_ws_addr: '',
+                    c_target_humi: '',
+                    c_pwd:'',
+                    showKeyboard: true
+                }
+            },
+            mounted: function () {
+                this.c_ws_addr = this.ws_addr;
+                this.c_target_humi = this.target_humi;
+                this.c_pwd=this.user_authentication;
+                console.log('mounted:' + this.target_humi);
+            },
+            template: '#settings',
+            methods: {
+                saveSettings: function () {
+                    app.$emit('updateSettings', {
+                        'ws_addr': this.c_ws_addr,
+                        'target_humi': this.c_target_humi,
+                        "user_authentication":this.c_pwd
+                    });
+                }
+            }
+        });
+
+        const routes = [
+            { path: '/', redirect: 'videorec' },
+            { path: '/videorec', component: videorec },
+            { path: '/datalook', component: datalook },
+            { path: '/settings', component: settings }
+        ];
+
+        const router = new VueRouter({
+            routes: routes // (缩写) 相当于 routes: routes
+        })
+
+        const app = new Vue({
+            el: '#app',
+            data: {
+                active: 0,
+                ws_addr: 'ws://127.0.0.1:9050/camera',
+                imgsrc: './nosignal.jfif',
+                user_authentication:'',
+                temp: '26',
+                humidity: '70',
+                target_humi: '75',
+                connected: false,
+                water_pump: false
+            },
+            created: function () {
+                storageOK = window.localStorage["nande_verify"];
+                console.log(storageOK);
+                if (storageOK) {
+                    this.ws_addr = window.localStorage["ws_addr"];
+                    this.target_humi = window.localStorage["target_humi"];
+                    this.user_authentication=window.localStorage["user_authentication"];
+                    window.auth_pwd=this.user_authentication;
+                    console.log('auth'+this.user_authentication);
+                    console.log('wauth'+window.auth_pwd);
+                    //settings.ws_addr = this.ws_addr;
+                    //settings.frame_rate = this.frame_rate;
+                    //settings.target_humi = this.target_humi
+                    //settings.c_pwd
+                }
+                this.$on('updateSettings', function (data) {
+                    this.ws_addr = data.ws_addr;
+                    this.target_humi = data.target_humi;
+                    this.user_authentication = data.user_authentication;
+                    window.auth_pwd=this.user_authentication;
+                    window.localStorage["ws_addr"] = this.ws_addr;
+                    window.localStorage["target_humi"] = this.target_humi;
+                    window.localStorage["user_authentication"] = this.user_authentication;
+                    window.localStorage["nande_verify"] = true;
+                    vant.Toast("已更新数据");
+                });
+                this.$on('updateWP', function (data) {
+                    this.water_pump = data;
+                });
+            },
+            router: router,
+            methods: {
+                redirectTo: function (url) {
+                    window.location.href = window.location.pathname + '#/' + url;
+                }
+            }
+        });
+
+        Vue.use(VueRouter);
+
+        Vue.use(vant.NavBar);
+        Vue.use(vant.Tabbar);
+        Vue.use(vant.TabbarItem);
+        Vue.use(vant.Grid);
+        Vue.use(vant.GridItem);
+        Vue.use(vant.Button);
+        Vue.use(vant.Field);
+        Vue.use(vant.Toast);
+        Vue.use(vant.Stepper);
+        Vue.use(vant.Cell);
+        Vue.use(vant.CellGroup);
+    </script>
+</body>
+
+</html>
